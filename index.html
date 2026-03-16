@@ -19,6 +19,11 @@
   .status-bar .val { color:var(--accent); font-size:1.1rem; display:block; text-align:center; }
   .status-bar .label { font-size:0.65rem; letter-spacing:0.1em; text-transform:uppercase; }
   .game-area { display:flex; gap:20px; align-items:flex-start; justify-content:center; flex-wrap:wrap; }
+  @media(max-width:600px){
+    .game-area { flex-direction:column; align-items:center; }
+    .side-panel { width:100% !important; flex-direction:row; flex-wrap:wrap; }
+    .side-panel .card { flex:1; min-width:140px; }
+  }
   .board-wrap { position:relative; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--panel); box-shadow:0 0 60px rgba(120,223,247,0.07); }
   #puzzleCanvas { display:block; }
   .side-panel { width:200px; display:flex; flex-direction:column; gap:12px; }
@@ -68,10 +73,19 @@
       <canvas id="puzzleCanvas"></canvas>
       <div id="debugBar">waiting...</div>
       <div id="permScreen">
-        <div class="icon">📷</div>
-        <h2>Camera Access Needed</h2>
-        <p>Your webcam feed becomes the puzzle. Nothing is recorded or sent anywhere.</p>
-        <button class="btn" id="startBtn">ALLOW CAMERA &amp; START</button>
+        <div style="font-size:2.4rem;margin-bottom:4px">🧩</div>
+        <h2 style="font-size:1.1rem;letter-spacing:0.1em">FACE PUZZLE</h2>
+        <p style="color:var(--accent);font-size:0.75rem;letter-spacing:0.06em;margin-top:-8px">hand-controlled sliding puzzle</p>
+
+        <p style="font-size:0.72rem;color:var(--muted);max-width:300px;text-align:center;line-height:1.6">
+          Rearrange the tiles to recreate your face.<br>
+          Your camera stays private — nothing is recorded.
+        </p>
+
+        <button class="btn" id="startBtn" style="width:auto;padding:12px 36px;font-size:0.85rem;margin-top:4px">
+          ▶ &nbsp;START PLAYING
+        </button>
+        <p style="font-size:0.62rem;color:var(--muted)">works best on desktop · Chrome or Safari</p>
       </div>
       <div id="loadBar">
         <h2>LOADING HAND MODEL</h2>
@@ -88,6 +102,11 @@
       <div class="card">
         <h3>How to Play</h3>
         <p><strong>Point</strong> your index finger at a tile next to the gap.<br><br><strong>Hold still</strong> — the ring fills and the tile slides!<br><br>No clicking needed.</p>
+      </div>
+      <div class="card">
+        <h3>Goal</h3>
+        <canvas id="previewCanvas" width="170" height="128" style="width:100%;border-radius:6px;display:block;opacity:0.85;"></canvas>
+        <p style="margin-top:6px;font-size:0.68rem;">Match your face to this image</p>
       </div>
       <div class="card">
         <h3>Controls</h3>
@@ -109,10 +128,10 @@
 
 <script>
 const GRID        = 3;
-const CANVAS_SIZE = 540;
+const CANVAS_SIZE = Math.min(540, window.innerWidth - 40);  // fits any screen
 const TILE_PX     = CANVAS_SIZE / GRID;
 const GAP         = 5;
-const HOVER_FRAMES = 20;
+const HOVER_FRAMES = 18;
 
 let board = [], videoEl = null;
 let snapshotImg = null, useSnapshot = false;
@@ -131,6 +150,9 @@ const loadMsg    = document.getElementById('loadMsg');
 const winOverlay = document.getElementById('winOverlay');
 const debugBar   = document.getElementById('debugBar');
 canvas.width = canvas.height = CANVAS_SIZE;
+canvas.style.width  = CANVAS_SIZE + 'px';
+canvas.style.height = CANVAS_SIZE + 'px';
+document.getElementById('boardWrap').style.width = CANVAS_SIZE + 'px';
 
 // ── Board ─────────────────────────────────────────────────────────────────
 function makeSolved(){
@@ -150,11 +172,17 @@ function isSolved(b){
   } return true;
 }
 function shuffleBoard(){
+  // Always shuffle by making valid sliding moves from solved state.
+  // This guarantees the puzzle is always solvable — no parity issues.
   let b=makeSolved(),[er,ec]=[GRID-1,GRID-1];
-  for(let i=0;i<300;i++){
-    const nb=getNeighbors(er,ec),[nr,nc]=nb[Math.floor(Math.random()*nb.length)];
+  let lastR=-1,lastC=-1; // track last move to avoid immediately undoing it
+  for(let i=0;i<150;i++){
+    const nb=getNeighbors(er,ec).filter(([r,c])=>!(r===lastR&&c===lastC));
+    const [nr,nc]=nb[Math.floor(Math.random()*nb.length)];
+    lastR=er; lastC=ec;
     b[er][ec]=b[nr][nc];b[nr][nc]=null;[er,ec]=[nr,nc];
-  } return b;
+  }
+  return b;
 }
 
 // ── Draw ──────────────────────────────────────────────────────────────────
@@ -178,12 +206,22 @@ function drawFrame(){
         continue;
       }
       const [or,oc]=tile;
+      // Mirror the source column so tile [r,c] draws from mirrored position.
+      // This makes visual solved state match logical solved state.
+      const mirroredOc = (GRID-1) - oc;
       ctx.save();
       ctx.beginPath(); ctx.roundRect(x1,y1,tw,th,6); ctx.clip();
-      // selfieMode:true already mirrors the landmarks to match this mirrored draw
       ctx.translate(x1+tw/2,y1+th/2); ctx.scale(-1,1); ctx.translate(-(x1+tw/2),-(y1+th/2));
-      ctx.drawImage(src,oc*(srcW/GRID),or*(srcH/GRID),srcW/GRID,srcH/GRID,x1,y1,tw,th);
+      ctx.drawImage(src,mirroredOc*(srcW/GRID),or*(srcH/GRID),srcW/GRID,srcH/GRID,x1,y1,tw,th);
       ctx.restore();
+      // highlight movable tiles with subtle green tint
+      const [emR,emC]=findEmpty(board);
+      const isMovable=getNeighbors(emR,emC).some(([nr,nc])=>nr===r&&nc===c);
+      if(isMovable){
+        ctx.beginPath(); ctx.roundRect(x1,y1,tw,th,6);
+        ctx.strokeStyle='rgba(60,219,130,0.45)'; ctx.lineWidth=2; ctx.stroke();
+      }
+
       // hover ring
       const isHover=hoverTile&&hoverTile[0]===r&&hoverTile[1]===c;
       if(isHover){
@@ -280,6 +318,28 @@ function onResults(results){
 
   drawFrame();
   updateHUD();
+  drawPreview();
+}
+
+function drawPreview(){
+  const pc=document.getElementById('previewCanvas');
+  if(!pc||!videoEl) return;
+  const src=(useSnapshot&&snapshotImg)?snapshotImg:videoEl;
+  if(!src) return;
+  const pctx=pc.getContext('2d');
+  const pw=pc.width, ph=pc.height;
+  pctx.clearRect(0,0,pw,ph);
+  // draw mirrored video thumbnail
+  pctx.save();
+  pctx.translate(pw,0); pctx.scale(-1,1);
+  pctx.drawImage(src,0,0,pw,ph);
+  pctx.restore();
+  // draw grid lines over it
+  pctx.strokeStyle='rgba(120,223,247,0.5)'; pctx.lineWidth=1;
+  for(let i=1;i<GRID;i++){
+    pctx.beginPath(); pctx.moveTo(i*pw/GRID,0); pctx.lineTo(i*pw/GRID,ph); pctx.stroke();
+    pctx.beginPath(); pctx.moveTo(0,i*ph/GRID); pctx.lineTo(pw,i*ph/GRID); pctx.stroke();
+  }
 }
 
 function showWin(){
